@@ -1,3 +1,13 @@
+/*
+ * *******************************************************************
+ * @项目名称: src
+ * @文件名称: ipchain-tx0.cpp
+ * @Date: 2018/10/11
+ * @Author: yuqi.lin
+ * @Copyright（C）: 2018 BlueHelix Inc.   All rights reserved.
+ * 注意：本内容仅限于内部传阅，禁止外泄以及用于其他的商业目的.
+ * *******************************************************************
+ */
 // Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -22,6 +32,9 @@
 #include "utilstrencodings.h"
 
 #include <stdio.h>
+#include <iostream>
+
+using namespace std;
 
 #include <boost/algorithm/string.hpp>
 #include <boost/assign/list_of.hpp>
@@ -82,6 +95,7 @@ static int AppInitRawTx(int argc, char* argv[])
             _("Optionally add the \"W\" flag to produce a pay-to-witness-pubkey-hash output") + ". " +
             _("Optionally add the \"S\" flag to wrap the output in a pay-to-script-hash."));
         strUsage += HelpMessageOpt("outdata=[VALUE:]DATA", _("Add data-based output to TX"));
+        strUsage += HelpMessageOpt("token=TOKEN:VALUE:ACCURACY:ADDRESS", _("Add token output to TX"));
         strUsage += HelpMessageOpt("outscript=VALUE:SCRIPT[:FLAGS]", _("Add raw script output to TX") + ". " +
             _("Optionally add the \"W\" flag to produce a pay-to-witness-script-hash output") + ". " +
             _("Optionally add the \"S\" flag to wrap the output in a pay-to-script-hash."));
@@ -113,7 +127,7 @@ static void RegisterSetJson(const std::string& key, const std::string& rawJson)
 {
     UniValue val;
     if (!val.read(rawJson)) {
-        std::string strErr = "Cannot parse JSON for key " + key;
+        std::string strErr = "Cannot parse JSON for key " + key + "----" + rawJson;
         throw std::runtime_error(strErr);
     }
 
@@ -200,6 +214,45 @@ static void MutateTxLocktime(CMutableTransaction& tx, const std::string& cmdVal)
         throw std::runtime_error("Invalid TX locktime requested");
 
     tx.nLockTime = (unsigned int) newLocktime;
+}
+
+static void MutateTokenTxAddInput(CMutableTransaction& tx, const std::string& strInput)
+{
+    // Separate into VALUE:ADDRESS
+    std::vector<std::string> vStrInputParts;
+    boost::split(vStrInputParts, strInput, boost::is_any_of(":"));
+
+    if (vStrInputParts.size() != 4)
+        throw std::runtime_error("TX token output missing or too many separators");
+
+    // Extract and validate VALUE
+    CAmount valueIpc = 0;
+    std::string tokenSymbol = vStrInputParts[0];
+    CAmount coin = 100000000;
+    CAmount accuracy = ExtractAndValidateValue(vStrInputParts[2]) / coin;
+   // CAmount accuracy = 2;
+    CAmount valueToken = ExtractAndValidateValue(vStrInputParts[1]) * pow(10, accuracy) / coin;
+    // extract and validate ADDRESS
+    
+    std::string strAddr = vStrInputParts[3];
+    CBitcoinAddress addr(strAddr);
+    if (!addr.IsValid())
+        throw std::runtime_error("invalid TX token output address");
+    // build standard output script via GetScriptForDestination()
+    CScript scriptPubKey = GetScriptForDestination(addr.Get());
+
+    // construct TxOut, append to transaction output list
+    TokenLabel tokenLableIn;
+    tokenLableIn.value = valueToken;
+    tokenLableIn.accuracy = accuracy;
+    const char* symbolStr = tokenSymbol.c_str();
+    for (int i = 0; i < sizeof( tokenLableIn.TokenSymbol) && i < tokenSymbol.length(); i++)
+    {
+        tokenLableIn.TokenSymbol[i] = symbolStr[i];
+    }
+     
+    CTxOut txout(valueIpc, scriptPubKey, tokenLableIn, "");
+    tx.vout.push_back(txout);
 }
 
 static void MutateTxAddInput(CMutableTransaction& tx, const std::string& strInput)
@@ -600,6 +653,7 @@ static void MutateTxSign(CMutableTransaction& tx, const std::string& flagStr)
                 CScript redeemScript(rsData.begin(), rsData.end());
                 tempKeystore.AddCScript(redeemScript);
             }
+
         }
     }
 
@@ -615,6 +669,7 @@ static void MutateTxSign(CMutableTransaction& tx, const std::string& flagStr)
             fComplete = false;
             continue;
         }
+
         const CScript& prevPubKey = coins->vout[txin.prevout.n].scriptPubKey;
         const CAmount& amount = coins->vout[txin.prevout.n].nValue;
 
@@ -627,6 +682,7 @@ static void MutateTxSign(CMutableTransaction& tx, const std::string& flagStr)
         BOOST_FOREACH(const CTransaction& txv, txVariants)
             sigdata = CombineSignatures(prevPubKey, MutableTransactionSignatureChecker(&mergedTx, i, amount), sigdata, DataFromTransaction(txv, i));
         UpdateTransaction(mergedTx, i, sigdata);
+
 
         if (!VerifyScript(txin.scriptSig, prevPubKey, &txin.scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, MutableTransactionSignatureChecker(&mergedTx, i, amount)))
             fComplete = false;
@@ -667,7 +723,8 @@ static void MutateTx(CMutableTransaction& tx, const std::string& command,
         MutateTxDelInput(tx, commandVal);
     else if (command == "in")
         MutateTxAddInput(tx, commandVal);
-
+    else if (command == "token")
+        MutateTokenTxAddInput(tx, commandVal);
     else if (command == "delout")
         MutateTxDelOutput(tx, commandVal);
     else if (command == "outaddr")
